@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,14 +22,11 @@ func DashboardRouter(r *mux.Router, db *sql.DB) {
 
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
 	msg := fmt.Sprintf("%v - URL: %s", time.Now(), r.URL)
-	fmt.Println(msg)
 	w.Write([]byte(msg))
 }
 
 func nodeHandler(db *sql.DB) http.HandlerFunc {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		msg := fmt.Sprintf("%v - URL: %s", time.Now(), r.URL)
-		fmt.Println(msg)
 		vars := mux.Vars(r)
 
 		resp, err := getNodeMetrics(db, vars["MetricName"], metricsApi.ResourceSelector{
@@ -56,8 +54,6 @@ func nodeHandler(db *sql.DB) http.HandlerFunc {
 
 func podHandler(db *sql.DB) http.HandlerFunc {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		msg := fmt.Sprintf("%v - URL: %s", time.Now(), r.URL)
-		fmt.Println(msg)
 		vars := mux.Vars(r)
 
 		resp, err := getPodMetrics(db, vars["MetricName"], metricsApi.ResourceSelector{
@@ -126,6 +122,9 @@ func getRows(db *sql.DB, table string, metricName string, selector metricsApi.Re
 
 	query = fmt.Sprintf(query+" where "+strings.Join(args, " and ")+" group by name, time order by %v;", table, strings.Join(orderBy, ", "))
 
+	log.Printf("Query: %s", query)
+	log.Printf("Values: %v", values)
+
 	return db.Query(query, values...)
 }
 
@@ -136,7 +135,7 @@ func getRows(db *sql.DB, table string, metricName string, selector metricsApi.Re
 func getPodMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSelector) (metricsApi.SidecarMetricResultList, error) {
 	rows, err := getRows(db, "pods", metricName, selector)
 	if err != nil {
-		fmt.Println("error getting pod metrics?")
+		log.Printf("Error getting pod metrics: %v", err)
 		return metricsApi.SidecarMetricResultList{}, err
 	}
 
@@ -218,7 +217,7 @@ func getNodeMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceS
 	rows, err := getRows(db, "nodes", metricName, selector)
 
 	if err != nil {
-		fmt.Println("error getting node metrics?")
+		log.Printf("Error getting node metrics: %v", err)
 		return metricsApi.SidecarMetricResultList{}, err
 	}
 

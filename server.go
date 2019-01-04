@@ -3,7 +3,7 @@ package main
 import (
 	"database/sql"
 	"flag"
-	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,6 +28,8 @@ func main() {
 	var refreshInterval *int
 	var maxWindow *int
 
+	log.SetOutput(os.Stdout)
+
 	if home := homeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 	} else {
@@ -42,35 +44,35 @@ func main() {
 	// This should only be run in-cluster so...
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		panic(err.Error())
+		log.Fatalf("Unable to generate a client config: %s", err)
 	}
 
-	fmt.Println("Kubernetes host: ", config.Host)
+	log.Printf("Kubernetes host: %s", config.Host)
 
 	// Generate the metrics client
 	clientset, err := metricsclient.NewForConfig(config)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Fatalf("Unable to generate a clientset: %s", err)
 	}
 
 	// Create the db "connection"
 	db, err := sql.Open("sqlite3", *dbFile)
 	if err != nil {
-		panic(err.Error())
+		log.Fatalf("Unable to open Sqlite database: %s", err)
 	}
 	defer db.Close()
 
 	// Populate tables
 	err = sidedb.CreateDatabase(db)
 	if err != nil {
-		panic(err.Error())
+		log.Fatalf("Unable to initialize database tables: %s", err)
 	}
 
 	go func() {
 		r := mux.NewRouter()
 		sideapi.ApiManager(r, db)
 		// Bind to a port and pass our router in
-		http.ListenAndServe(":8000", r)
+		log.Fatal(http.ListenAndServe(":8000", r))
 	}()
 
 	// Start the machine. Scrape every refreshInterval
@@ -83,37 +85,35 @@ func main() {
 			ticker.Stop()
 			return
 
-		case t := <-ticker.C:
+		case <-ticker.C:
 			err = nil
 			nodeMetrics, err := clientset.Metrics().NodeMetricses().List(v1.ListOptions{})
 			if err != nil {
-				fmt.Println(err.Error())
+				log.Printf("Error scraping node metrics: %s", err)
 				break
 			}
 
 			podMetrics, err := clientset.Metrics().PodMetricses("").List(v1.ListOptions{})
 			if err != nil {
-				fmt.Println(err.Error())
+				log.Printf("Error scraping pod metrics: %s", err)
 				break
 			}
 
 			// Insert scrapes into DB
 			err = sidedb.UpdateDatabase(db, nodeMetrics, podMetrics)
 			if err != nil {
-				fmt.Println("error updating database")
-				fmt.Println(err.Error())
+				log.Printf("Error updating database: %s", err)
 				break
 			}
 
 			// Delete rows outside of the maxWindow time
 			err = sidedb.CullDatabase(db, maxWindow)
 			if err != nil {
-				fmt.Println("error culling database")
-				fmt.Println(err.Error())
+				log.Printf("Error culling database: %s", err)
 				break
 			}
 
-			fmt.Println(fmt.Sprintf("%v - db updated", t))
+			log.Println("Database updated")
 		}
 	}
 }

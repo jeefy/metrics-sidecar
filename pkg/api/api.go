@@ -3,8 +3,8 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/mux"
 	dashboardProvider "github.com/jeefy/metrics-sidecar/pkg/api/dashboard"
@@ -21,13 +21,13 @@ func ApiManager(r *mux.Router, db *sql.DB) {
 }
 
 func RootHandler(w http.ResponseWriter, r *http.Request) {
-	msg := fmt.Sprintf("%v - URL: %s", time.Now(), r.URL)
-	fmt.Println(msg)
+	msg := fmt.Sprintf("URL: %s", r.URL)
+	log.Println(msg)
 	w.Write([]byte(msg))
 }
 
 func DefaultHandler(w http.ResponseWriter, r *http.Request) {
-	msg := fmt.Sprintf("%v - URL: %s", time.Now(), r.URL)
-	fmt.Println(msg)
+	msg := fmt.Sprintf("URL: %s", r.URL)
+	log.Println(msg)
 	w.Write([]byte(msg))
 }
