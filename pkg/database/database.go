@@ -2,13 +2,12 @@ package database
 
 import (
 	"database/sql"
-	"fmt"
 
 	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
 )
 
 /*
-	CreateDatabase: Creates tables for node and pod metrics
+	CreateDatabase creates tables for node and pod metrics
 */
 func CreateDatabase(db *sql.DB) error {
 	sqlStmt := `
@@ -24,7 +23,7 @@ func CreateDatabase(db *sql.DB) error {
 }
 
 /*
-	UpdateDatabase: Takes nodeMetrics and podMetrics and inserts the data
+	UpdateDatabase updates nodeMetrics and podMetrics with scraped data
 */
 func UpdateDatabase(db *sql.DB, nodeMetrics *v1beta1.NodeMetricsList, podMetrics *v1beta1.PodMetricsList) error {
 	tx, err := db.Begin()
@@ -38,7 +37,7 @@ func UpdateDatabase(db *sql.DB, nodeMetrics *v1beta1.NodeMetricsList, podMetrics
 	defer stmt.Close()
 
 	for _, v := range nodeMetrics.Items {
-		_, err = stmt.Exec(v.UID, v.Name, v.Usage.Cpu().String(), v.Usage.Memory().String(), v.Usage.StorageEphemeral().String())
+		_, err = stmt.Exec(v.UID, v.Name, v.Usage.Cpu().MilliValue(), v.Usage.Memory().MilliValue(), v.Usage.StorageEphemeral().MilliValue())
 		if err != nil {
 			return err
 		}
@@ -52,32 +51,57 @@ func UpdateDatabase(db *sql.DB, nodeMetrics *v1beta1.NodeMetricsList, podMetrics
 
 	for _, v := range podMetrics.Items {
 		for _, u := range v.Containers {
-			_, err = stmt.Exec(v.UID, v.Name, v.Namespace, u.Name, u.Usage.Cpu().String(), u.Usage.Memory().String(), u.Usage.StorageEphemeral().String())
+			_, err = stmt.Exec(v.UID, v.Name, v.Namespace, u.Name, u.Usage.Cpu().MilliValue(), u.Usage.Memory().MilliValue(), u.Usage.StorageEphemeral().MilliValue())
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		rberr := tx.Rollback()
+		if rberr != nil {
+			return rberr
+		}
+		return err
+	}
+
 	return nil
 }
 
 /*
-	CullDatabase: Deletes rows from nodes and pods based on a time window.
+	CullDatabase deletes rows from nodes and pods based on a time window.
 */
 func CullDatabase(db *sql.DB, window *int) error {
-	var sqlStmt string
+	tx, err := db.Begin()
 
-	sqlStmt = fmt.Sprintf("delete from nodes where time <= datetime('now','-%d minutes');", *window)
-	_, err := db.Exec(sqlStmt)
+	nodestmt, err := tx.Prepare("delete from nodes where time <= datetime('now',?);")
 	if err != nil {
 		return err
 	}
 
-	sqlStmt = fmt.Sprintf("delete from pods where time <= datetime('now','-%d minutes');", *window)
-	_, err = db.Exec(sqlStmt)
+	defer nodestmt.Close()
+	_, err = nodestmt.Exec("-" + string(*window) + " minutes")
 	if err != nil {
+		return err
+	}
+
+	podstmt, err := tx.Prepare("delete from pods where time <= datetime('now',?);")
+	defer podstmt.Close()
+	_, err = podstmt.Exec("-" + string(*window) + " minutes")
+	if err != nil {
+		return err
+	}
+
+	err = tx.Commit()
+
+	if err != nil {
+		rberr := tx.Rollback()
+		if rberr != nil {
+			return rberr
+		}
 		return err
 	}
 

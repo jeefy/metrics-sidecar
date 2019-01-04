@@ -37,14 +37,14 @@ func nodeHandler(db *sql.DB) http.HandlerFunc {
 		})
 
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("Node Metrics Error - %v", err.Error())))
 		}
 
 		j, err := json.Marshal(resp)
 
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("JSON Error - %v", err.Error())))
 		}
 
@@ -66,14 +66,14 @@ func podHandler(db *sql.DB) http.HandlerFunc {
 		})
 
 		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf("Node Metrics Error - %v", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf("Pod Metrics Error - %v", err.Error())))
 		}
 
 		j, err := json.Marshal(resp)
 
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("JSON Error - %v", err.Error())))
 		}
 
@@ -83,53 +83,73 @@ func podHandler(db *sql.DB) http.HandlerFunc {
 	return http.HandlerFunc(fn)
 }
 
+func getRows(db *sql.DB, table string, metricName string, selector metricsApi.ResourceSelector) (*sql.Rows, error) {
+	var query string
+	var values []interface{}
+	var args []string
+	orderBy := []string{"name", "time"}
+	if metricName == "cpu" {
+		query = "select sum(cpu), name, uid, time from %s "
+	} else {
+		//default to metricName == "memory/usage"
+		metricName = "memory"
+		query = "select sum(memory), name, uid, time from %s "
+	}
+
+	if table == "pods" {
+		orderBy = []string{"namespace", "name", "time"}
+		args = append(args, "namespace=?")
+		if selector.Namespace != "" {
+			values = append(values, selector.Namespace)
+		} else {
+			values = append(values, "default")
+		}
+	}
+
+	if selector.ResourceName != "" {
+		if strings.ContainsAny(selector.ResourceName, ",") {
+			subargs := []string{}
+			for _, v := range strings.Split(selector.ResourceName, ",") {
+				subargs = append(subargs, "?")
+				values = append(values, v)
+			}
+			args = append(args, " name in ("+strings.Join(subargs, ",")+")")
+		} else {
+			values = append(values, selector.ResourceName)
+			args = append(args, " name = ?")
+		}
+	}
+	if selector.UID != "" {
+		args = append(args, " uid = ?")
+		values = append(values, selector.UID)
+	}
+
+	query = fmt.Sprintf(query+" where "+strings.Join(args, " and ")+" group by name, time order by %v;", table, strings.Join(orderBy, ", "))
+
+	return db.Query(query, values...)
+}
+
 /*
 	getPodMetrics: With a database connection and a resource selector
 	Queries SQLite and returns a list of metrics.
 */
 func getPodMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSelector) (metricsApi.SidecarMetricResultList, error) {
-	query := ""
-	multiplier := uint64(1000)
-	if metricName == "cpu" {
-		query = "select sum(cpu), name, uid, time from pods where "
-		multiplier = uint64(1)
-	} else {
-		//default to metricName == "memory/usage"
-		metricName = "memory"
-		query = "select sum(memory), name, uid, time from pods where "
+	rows, err := getRows(db, "pods", metricName, selector)
+	if err != nil {
+		fmt.Println("error getting pod metrics?")
+		return metricsApi.SidecarMetricResultList{}, err
 	}
 
-	if selector.Namespace != "" {
-		query = fmt.Sprintf(query+" namespace='%v'", selector.Namespace)
-	} else {
-		query = query + " namespace='default'"
-	}
-
-	if selector.ResourceName != "" {
-		if strings.ContainsAny(selector.ResourceName, ",") {
-			query = fmt.Sprintf(query+" and name in (%v)", "'"+strings.Join(strings.Split(selector.ResourceName, ","), "', '")+"'")
-		} else {
-			query = fmt.Sprintf(query+" and name='%v'", selector.ResourceName)
-		}
-	}
-	if selector.UID != "" {
-		query = fmt.Sprintf(query+" uid='%v'", selector.UID)
-	}
-
-	query = query + " group by name, time order by namespace, name, time;"
+	defer rows.Close()
 
 	resultList := make(map[string]metricsApi.SidecarMetric)
 
-	rows, err := db.Query(query)
-	if err != nil {
-		return metricsApi.SidecarMetricResultList{}, err
-	}
-	defer rows.Close()
 	for rows.Next() {
 		var metricValue string
 		var pod string
 		var metricTime string
 		var uid string
+		var newMetric metricsApi.MetricPoint
 		err = rows.Scan(&metricValue, &pod, &uid, &metricTime)
 		if err != nil {
 			return metricsApi.SidecarMetricResultList{}, err
@@ -143,9 +163,16 @@ func getPodMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSe
 
 		v, err := strconv.ParseUint(metricValue, 10, 64)
 
-		newMetric := metricsApi.MetricPoint{
-			Timestamp: t,
-			Value:     v * multiplier,
+		if metricName == "memory" {
+			newMetric = metricsApi.MetricPoint{
+				Timestamp: t,
+				Value:     v / 1000,
+			}
+		} else {
+			newMetric = metricsApi.MetricPoint{
+				Timestamp: t,
+				Value:     v,
+			}
 		}
 
 		if _, ok := resultList[pod]; ok {
@@ -181,41 +208,27 @@ func getPodMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSe
 	Queries SQLite and returns a list of metrics.
 */
 func getNodeMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSelector) (metricsApi.SidecarMetricResultList, error) {
-	query := ""
-	multiplier := uint64(1000)
 	stripNum := 2
 	if metricName == "cpu" {
-		query = "select cpu, name, uid, time from nodes "
-		multiplier = uint64(1)
 		stripNum = 1
-	} else {
-		metricName = "memory"
-		//default to metricName == "memory/usage"
-		query = "select memory, name, uid, time from nodes "
 	}
-
-	if selector.ResourceName != "" {
-		if strings.ContainsAny(selector.ResourceName, ",") {
-			query = fmt.Sprintf(query+" where name in (?)", "'"+strings.Join(strings.Split(selector.ResourceName, ","), "', '")+"'")
-		} else {
-			query = fmt.Sprintf(query+" where name='%v'", selector.ResourceName)
-		}
-	}
-
-	query = query + " group by name, time order by name, time;"
 
 	resultList := make(map[string]metricsApi.SidecarMetric)
 
-	rows, err := db.Query(query)
+	rows, err := getRows(db, "nodes", metricName, selector)
+
 	if err != nil {
+		fmt.Println("error getting node metrics?")
 		return metricsApi.SidecarMetricResultList{}, err
 	}
+
 	defer rows.Close()
 	for rows.Next() {
 		var metricValue string
 		var node string
 		var metricTime string
 		var uid string
+		var newMetric metricsApi.MetricPoint
 		err = rows.Scan(&metricValue, &node, &uid, &metricTime)
 		if err != nil {
 			return metricsApi.SidecarMetricResultList{}, err
@@ -229,9 +242,16 @@ func getNodeMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceS
 
 		v, err := strconv.ParseUint(metricValue[0:len(metricValue)-stripNum], 10, 64)
 
-		newMetric := metricsApi.MetricPoint{
-			Timestamp: t,
-			Value:     v * multiplier,
+		if metricName == "memory" {
+			newMetric = metricsApi.MetricPoint{
+				Timestamp: t,
+				Value:     v / 10,
+			}
+		} else {
+			newMetric = metricsApi.MetricPoint{
+				Timestamp: t,
+				Value:     v,
+			}
 		}
 
 		if _, ok := resultList[node]; ok {

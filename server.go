@@ -10,8 +10,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	sideApi "github.com/jeefy/metrics-sidecar/pkg/api"
-	sideDb "github.com/jeefy/metrics-sidecar/pkg/database"
+	sideapi "github.com/jeefy/metrics-sidecar/pkg/api"
+	sidedb "github.com/jeefy/metrics-sidecar/pkg/database"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
@@ -39,16 +39,10 @@ func main() {
 
 	flag.Parse()
 
-	// Start the machine. Scrape every refreshInterval
-	ticker := time.NewTicker(time.Duration(*refreshInterval) * time.Second)
-	errCh := make(chan error)
-	quit := make(chan struct{})
-
-	// use the current context in kubeconfig
-
+	// This should only be run in-cluster so...
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		errCh <- err
+		panic(err.Error())
 	}
 
 	fmt.Println("Kubernetes host: ", config.Host)
@@ -56,73 +50,70 @@ func main() {
 	// Generate the metrics client
 	clientset, err := metricsclient.NewForConfig(config)
 	if err != nil {
-		errCh <- err
+		fmt.Println(err.Error())
 	}
 
 	// Create the db "connection"
 	db, err := sql.Open("sqlite3", *dbFile)
 	if err != nil {
-		errCh <- err
+		panic(err.Error())
 	}
 	defer db.Close()
 
 	// Populate tables
-	sideDb.CreateDatabase(db)
+	err = sidedb.CreateDatabase(db)
+	if err != nil {
+		panic(err.Error())
+	}
 
 	go func() {
 		r := mux.NewRouter()
-		sideApi.ApiManager(r, db)
+		sideapi.ApiManager(r, db)
 		// Bind to a port and pass our router in
 		http.ListenAndServe(":8000", r)
 	}()
 
-	go func() {
-		for {
-			select {
-			case <-quit:
-				ticker.Stop()
-				return
-
-			case t := <-ticker.C:
-				err = nil
-				nodeMetrics, err := clientset.Metrics().NodeMetricses().List(v1.ListOptions{})
-				if err != nil {
-					errCh <- err
-					break
-				}
-
-				podMetrics, err := clientset.Metrics().PodMetricses("").List(v1.ListOptions{})
-				if err != nil {
-					errCh <- err
-					break
-				}
-
-				// Insert scrapes into DB
-				err = sideDb.UpdateDatabase(db, nodeMetrics, podMetrics)
-				if err != nil {
-					errCh <- err
-					break
-				}
-
-				// Delete rows outside of the maxWindow time
-				err = sideDb.CullDatabase(db, maxWindow)
-				if err != nil {
-					errCh <- err
-					break
-				}
-
-				fmt.Println(fmt.Sprintf("%v - db updated", t))
-			}
-		}
-	}()
+	// Start the machine. Scrape every refreshInterval
+	ticker := time.NewTicker(time.Duration(*refreshInterval) * time.Second)
+	quit := make(chan struct{})
 
 	for {
 		select {
-		case trappedError := <-errCh:
-			fmt.Println(trappedError.Error())
-
 		case <-quit:
+			ticker.Stop()
 			return
+
+		case t := <-ticker.C:
+			err = nil
+			nodeMetrics, err := clientset.Metrics().NodeMetricses().List(v1.ListOptions{})
+			if err != nil {
+				fmt.Println(err.Error())
+				break
+			}
+
+			podMetrics, err := clientset.Metrics().PodMetricses("").List(v1.ListOptions{})
+			if err != nil {
+				fmt.Println(err.Error())
+				break
+			}
+
+			// Insert scrapes into DB
+			err = sidedb.UpdateDatabase(db, nodeMetrics, podMetrics)
+			if err != nil {
+				fmt.Println("error updating database")
+				fmt.Println(err.Error())
+				break
+			}
+
+			// Delete rows outside of the maxWindow time
+			err = sidedb.CullDatabase(db, maxWindow)
+			if err != nil {
+				fmt.Println("error culling database")
+				fmt.Println(err.Error())
+				break
+			}
+
+			fmt.Println(fmt.Sprintf("%v - db updated", t))
 		}
 	}
 }
