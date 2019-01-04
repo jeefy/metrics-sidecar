@@ -3,10 +3,11 @@ package main
 import (
 	"database/sql"
 	"flag"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -28,7 +29,14 @@ func main() {
 	var refreshInterval *int
 	var maxWindow *int
 
+	log.SetFormatter(&log.JSONFormatter{})
+
+	// Output to stdout instead of the default stderr
+	// Can be any io.Writer, see below for File example
 	log.SetOutput(os.Stdout)
+
+	// Only log the warning severity or above.
+	log.SetLevel(log.InfoLevel)
 
 	if home := homeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
@@ -47,7 +55,7 @@ func main() {
 		log.Fatalf("Unable to generate a client config: %s", err)
 	}
 
-	log.Printf("Kubernetes host: %s", config.Host)
+	log.Infof("Kubernetes host: %s", config.Host)
 
 	// Generate the metrics client
 	clientset, err := metricsclient.NewForConfig(config)
@@ -89,31 +97,31 @@ func main() {
 			err = nil
 			nodeMetrics, err := clientset.Metrics().NodeMetricses().List(v1.ListOptions{})
 			if err != nil {
-				log.Printf("Error scraping node metrics: %s", err)
+				log.Errorf("Error scraping node metrics: %s", err)
 				break
 			}
 
 			podMetrics, err := clientset.Metrics().PodMetricses("").List(v1.ListOptions{})
 			if err != nil {
-				log.Printf("Error scraping pod metrics: %s", err)
+				log.Errorf("Error scraping pod metrics: %s", err)
 				break
 			}
 
 			// Insert scrapes into DB
 			err = sidedb.UpdateDatabase(db, nodeMetrics, podMetrics)
 			if err != nil {
-				log.Printf("Error updating database: %s", err)
+				log.Errorf("Error updating database: %s", err)
 				break
 			}
 
 			// Delete rows outside of the maxWindow time
 			err = sidedb.CullDatabase(db, maxWindow)
 			if err != nil {
-				log.Printf("Error culling database: %s", err)
+				log.Errorf("Error culling database: %s", err)
 				break
 			}
 
-			log.Println("Database updated")
+			log.Info("Database updated")
 		}
 	}
 }

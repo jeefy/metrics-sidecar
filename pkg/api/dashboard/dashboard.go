@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/gorilla/mux"
 	metricsApi "github.com/kubernetes/dashboard/src/app/backend/integration/metric/api"
@@ -122,8 +123,8 @@ func getRows(db *sql.DB, table string, metricName string, selector metricsApi.Re
 
 	query = fmt.Sprintf(query+" where "+strings.Join(args, " and ")+" group by name, time order by %v;", table, strings.Join(orderBy, ", "))
 
-	log.Printf("Query: %s", query)
-	log.Printf("Values: %v", values)
+	log.Infof("Query: %s", query)
+	log.Infof("Values: %v", values)
 
 	return db.Query(query, values...)
 }
@@ -135,7 +136,7 @@ func getRows(db *sql.DB, table string, metricName string, selector metricsApi.Re
 func getPodMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceSelector) (metricsApi.SidecarMetricResultList, error) {
 	rows, err := getRows(db, "pods", metricName, selector)
 	if err != nil {
-		log.Printf("Error getting pod metrics: %v", err)
+		log.Errorf("Error getting pod metrics: %v", err)
 		return metricsApi.SidecarMetricResultList{}, err
 	}
 
@@ -217,7 +218,7 @@ func getNodeMetrics(db *sql.DB, metricName string, selector metricsApi.ResourceS
 	rows, err := getRows(db, "nodes", metricName, selector)
 
 	if err != nil {
-		log.Printf("Error getting node metrics: %v", err)
+		log.Errorf("Error getting node metrics: %v", err)
 		return metricsApi.SidecarMetricResultList{}, err
 	}
 

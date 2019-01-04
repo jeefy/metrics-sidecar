@@ -3,8 +3,9 @@ package api
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/gorilla/mux"
 	dashboardProvider "github.com/jeefy/metrics-sidecar/pkg/api/dashboard"
@@ -22,12 +23,12 @@ func ApiManager(r *mux.Router, db *sql.DB) {
 
 func RootHandler(w http.ResponseWriter, r *http.Request) {
 	msg := fmt.Sprintf("URL: %s", r.URL)
-	log.Println(msg)
+	log.Info(msg)
 	w.Write([]byte(msg))
 }
 
 func DefaultHandler(w http.ResponseWriter, r *http.Request) {
 	msg := fmt.Sprintf("URL: %s", r.URL)
-	log.Println(msg)
+	log.Info(msg)
 	w.Write([]byte(msg))
 }
