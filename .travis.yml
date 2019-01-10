@@ -1,0 +1,19 @@
+services:
+  - docker
+
+language: go
+
+go:
+  - 1.11.2
+
+install: true
+
+jobs:
+  include:
+    - stage: Test
+      script: 
+      - go get -d
+      - go test ./...
+    - stage: Build
+      script: 
+      - docker build -t metrics-scraper .
